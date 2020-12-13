@@ -1,15 +1,16 @@
 cmake_minimum_required(VERSION 3.0.0)
 
-project(AdventOfCode)
+project(Games)
+
+# Use solution folders.
+set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
 # Onut
-add_subdirectory(./thirdparty/onut onut)
+add_subdirectory(${CMAKE_SOURCE_DIR}/thirdparty/onut onut)
 list(APPEND libs PUBLIC libonut)
-list(APPEND includes PUBLIC ./thirdparty/onut/include/)
+list(APPEND includes PUBLIC ${CMAKE_SOURCE_DIR}/thirdparty/onut/include/)
 
-add_subdirectory(./1)
-add_subdirectory(./2)
-add_subdirectory(./3)
-add_subdirectory(./4)
-add_subdirectory(./5)
-add_subdirectory(./6)
+# Common
+list(APPEND includes PUBLIC ${CMAKE_SOURCE_DIR}/common/)
+
+add_subdirectory(./games/freecell)
