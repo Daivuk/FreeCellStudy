@@ -14,5 +14,4 @@ public:
 
 public:
     int suit;
-    vector<CardRef> cards;
 };

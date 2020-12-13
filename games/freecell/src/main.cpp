@@ -1,3 +1,4 @@
+#include <onut/Input.h>
 #include <onut/Renderer.h>
 #include <onut/Settings.h>
 #include <onut/SpriteBatch.h>
@@ -27,6 +28,9 @@ void shutdown()
 
 void update()
 {
+    if (OInputPressed(OKeyLeftControl) && OInputJustPressed(OKeyN)) // New game
+        g_board = make_shared<Board>();
+
     g_board->update(ODT);
 }
 
