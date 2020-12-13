@@ -1,6 +1,7 @@
 #include <onut/Maths.h>
 #include <onut/Rect.h>
 #include "card.h"
+#include "common.h"
 #include "globals.h"
 #include "resources.h"
 #include "sprite.h"
@@ -8,6 +9,8 @@
 Card::Card(int in_id)
     : id(in_id)
 {
+    draw_order = -1;
+    position = { 114, 2 + TOP_OFFSET };
 }
 
 void Card::update(float dt)
@@ -18,6 +21,8 @@ void Card::update(float dt)
     {
         position = Vector2::MoveToward(position, target_position, 5.f * dt, 3.5f);
         show_back = target_show_back;
+        if (draw_order == -1)
+            draw_order = target_draw_order;
     }
 
     if (position == target_position)

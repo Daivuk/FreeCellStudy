@@ -10,15 +10,21 @@
 #include "target.h"
 
 Board::Board()
+    : Board(onut::randomizeSeed())
+{
+}
+
+Board::Board(unsigned int in_seed)
+    : seed(in_seed)
 {
     // Create playfield piles
     for (int i = 0; i < 8; ++i)
-        piles.push_back(make_shared<Pile>(Vector2(10 + (float)i * 30, 44)));
+        piles.push_back(make_shared<Pile>(Vector2(10 + (float)i * 30, 44 + TOP_OFFSET)));
 
     // Create reserves
     for (int i = 0; i < 4; ++i)
     {
-        auto reserve = make_shared<Reserve>(Vector2(2 + (float)i * 28, 2));
+        auto reserve = make_shared<Reserve>(Vector2(2 + (float)i * 28, 2 + TOP_OFFSET));
         reserves.push_back(reserve);
         piles.push_back(reserve);
     }
@@ -26,7 +32,7 @@ Board::Board()
     // Create targets
     for (int i = 0; i < 4; ++i)
     {
-        auto target = make_shared<Target>(Vector2(142 + (float)i * 28, 2), i);
+        auto target = make_shared<Target>(Vector2(142 + (float)i * 28, 2 + TOP_OFFSET), i);
         targets.push_back(target);
         piles.push_back(target);
     }
@@ -37,7 +43,7 @@ Board::Board()
         deck.push_back(make_shared<Card>(i));
 
     // Shuffle
-    onut::randomizeSeed();
+    onut::setSeed(seed);
     onut::shuffle(deck);
 
     // Distribute cards on board
@@ -45,7 +51,6 @@ Board::Board()
     {
         piles[i % 8]->push(deck[i]);
         deck[i]->target_show_back = false; // Reveal
-        deck[i]->draw_order = deck[i]->target_draw_order; // Force draw order on first draw
         deck[i]->delay = (float)i * 0.0125f;
     }
 
@@ -149,7 +154,7 @@ void Board::update(float dt)
         }
         else
         {
-            if (Vector2::Distance(mouse_pos, drag.mouse_pos_on_down) > 3.f / (float)PIXEL_SIZE)
+            if (Vector2::Distance(mouse_pos, drag.mouse_pos_on_down) > 5.f / (float)PIXEL_SIZE)
                 drag.started_drag = true;
 
             // Update position to follow mouse
@@ -259,7 +264,14 @@ void Board::update(float dt)
             }
         }
     }
-    else if (OInputPressed(OKeyLeftControl) && OInputJustPressed(OKeyZ) && !history.empty()) // Undo
+
+    if (!winCondition())
+        final_time = OToSeconds(ONow - start_time);
+}
+
+void Board::undo()
+{
+    if (!history.empty()) // Undo
     {
         auto move = history.back();
         history.pop_back();
@@ -273,9 +285,6 @@ void Board::update(float dt)
         for (const auto& card : move.cards)
             move.from->push(card);
     }
-
-    if (!winCondition())
-        final_time = OToSeconds(ONow - start_time);
 }
 
 void Board::draw()
@@ -298,8 +307,8 @@ void Board::draw()
 
     // Moves/time/score
     auto font = OGetFont("font.fnt");
-    oSpriteBatch->drawText(font, "Time", {126, 8}, OTop, TEXT_COLOR);
-    oSpriteBatch->drawText(font, onut::secondsToString(final_time, true), {126, 8 + 6}, OTop, ACTIVE_TEXT_COLOR);
-    oSpriteBatch->drawText(font, "Moves", {126, 24}, OTop, TEXT_COLOR);
-    oSpriteBatch->drawText(font, to_string(history.size()), {126, 24 + 6}, OTop, ACTIVE_TEXT_COLOR);
+    oSpriteBatch->drawText(font, "Time", {126, 8 + TOP_OFFSET}, OTop, TEXT_COLOR);
+    oSpriteBatch->drawText(font, onut::secondsToString(final_time, true), {126, 8 + 6 + TOP_OFFSET}, OTop, ACTIVE_TEXT_COLOR);
+    oSpriteBatch->drawText(font, "Moves", {126, 24 + TOP_OFFSET}, OTop, TEXT_COLOR);
+    oSpriteBatch->drawText(font, to_string(history.size()), {126, 24 + 6 + TOP_OFFSET}, OTop, ACTIVE_TEXT_COLOR);
 }

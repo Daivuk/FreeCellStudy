@@ -17,8 +17,8 @@ public:
     void draw(const Vector2& position, const Color& color = Color::White) const;
     void drawWithAngle(const Vector2& position, float angle, const Color& color = Color::White) const;
 
-private:
-    OTextureRef m_sprite_sheet;
-    Vector2 m_size;
-    Vector4 m_uvs;
+public:
+    OTextureRef sprite_sheet;
+    Vector2 size;
+    Vector4 uvs;
 };

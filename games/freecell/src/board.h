@@ -24,9 +24,11 @@ class Board
 {
 public:
     Board();
+    Board(unsigned int seed);
 
     void update(float dt);
     void draw();
+    void undo();
 
 public:
     struct Move
@@ -39,6 +41,8 @@ public:
     bool grabCardStack(const CardRef& card);
     bool isDragStackSizeAllowed(int size, const PileRef& from, const PileRef& to) const;
     bool winCondition() const;
+
+    unsigned int seed = 0;
 
     vector<CardRef> deck;
     vector<PileRef> piles;

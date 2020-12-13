@@ -1,4 +1,6 @@
+#include <imgui/imgui.h>
 #include <onut/Input.h>
+#include <onut/onut.h>
 #include <onut/Renderer.h>
 #include <onut/Settings.h>
 #include <onut/SpriteBatch.h>
@@ -28,8 +30,11 @@ void shutdown()
 
 void update()
 {
-    if (OInputPressed(OKeyLeftControl) && OInputJustPressed(OKeyN)) // New game
+    if (OInputPressed(OKeyLeftControl) && OInputJustPressed(OKeyN))
         g_board = make_shared<Board>();
+
+    if (OInputPressed(OKeyLeftControl) && OInputJustPressed(OKeyZ))
+        g_board->undo();
 
     g_board->update(ODT);
 }
@@ -52,4 +57,41 @@ void postRender()
 
 void renderUI()
 {
+    if (ImGui::BeginMainMenuBar())
+    {
+        if (ImGui::BeginMenu("Game"))
+        {
+            if (ImGui::MenuItem("New", "Ctrl + N"))
+                g_board = make_shared<Board>();
+
+            if (ImGui::MenuItem("Restart"))
+                g_board = make_shared<Board>(g_board->seed);
+
+            ImGui::Separator();
+
+            if (ImGui::MenuItem("Undo", "Ctrl + Z"))
+                g_board->undo();
+
+            ImGui::Separator();
+
+            if (ImGui::MenuItem("Exit", "Alt + F4"))
+                OQuit();
+
+            ImGui::EndMenu();
+        }
+
+        if (ImGui::BeginMenu("Skin"))
+        {
+            for (int i = 0; i < (int)g_resources->skins.size(); ++i)
+            {
+                auto selected = g_resources->skin == g_resources->skins[i];
+                if (ImGui::MenuItem(("Skin " + to_string(i + 1)).c_str(), 0, &selected))
+                    g_resources->changeSkin(g_resources->skins[i]);
+            }
+
+            ImGui::EndMenu();
+        }
+
+        ImGui::EndMainMenuBar();
+    }
 }
