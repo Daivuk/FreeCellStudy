@@ -15,6 +15,8 @@
 #define CARD_WIDTH 100
 #define CARD_HEIGHT 145
 
+#define MAX_UNDO 200
+
 #define FREE_HOME_H_SPACING 12
 #define FREE_CELL_X 20
 #define HOME_CELL_X (WIDTH - FREE_CELL_X - CARD_WIDTH * 4 - FREE_HOME_H_SPACING * 3)
@@ -99,6 +101,12 @@ typedef struct
     Source source;
 } Drag;
 
+typedef struct
+{
+    Source source;
+    Source dest;
+} Action;
+
 // Variables
 SDL_bool is_application_running = SDL_TRUE;
 SDL_Window *window = NULL;
@@ -106,6 +114,8 @@ SDL_Renderer *renderer = NULL;
 Board board;
 Drag drag = { 0 };
 SDL_Texture *textures[TEXTURE_COUNT];
+Action history[MAX_UNDO];
+int history_count = 0;
 
 // Prototypes
 void init();
@@ -134,11 +144,13 @@ void removeSource(Source source);
 int getSourceCardCount(Source source);
 void autoMoveCard(Source source);
 SDL_bool canHomeCellAcceptSource(Source source, int suit);
-SDL_bool canTableauAcceptSource(Source source, int tableau_index);
+SDL_bool canTableauAcceptSource(Source source, int tableau_index, SDL_bool only_king_to_empty);
 SDL_bool canFreeCellAcceptSource(Source source, int free_cell_index);
-void moveCardToHomeCell(Source source, int suit);
-void moveCardToTableau(Source source, int tableau_index);
-void moveCardToFreeCell(Source source, int free_cell_index);
+void moveCardToHomeCell(Source source, int suit, SDL_bool record_to_history);
+void moveCardToTableau(Source source, int tableau_index, SDL_bool record_to_history);
+void moveCardToFreeCell(Source source, int free_cell_index, SDL_bool record_to_history);
+void undo();
+void recordHistory(Source source, Source dest);
 
 Point getFreeCellPosition(int index);
 Point getHomeCellPosition(int index);
@@ -246,6 +258,9 @@ void pollEvents()
 
                 if (e.key.keysym.sym == SDLK_F5)
                     newGame(board.seed);
+
+                if (e.key.keysym.sym == SDLK_z && e.key.keysym.mod & KMOD_LCTRL)
+                    undo();
 
                 break;
         }
@@ -531,21 +546,21 @@ void onMouseUp(Point position)
         {
             case ORIGIN_FREE_CELL:
                 if (canFreeCellAcceptSource(drag.source, dest.free_cell_index))
-                    moveCardToFreeCell(drag.source, dest.free_cell_index);
+                    moveCardToFreeCell(drag.source, dest.free_cell_index, SDL_TRUE);
                 else
                     resetDragPosition();
                 break;
 
             case ORIGIN_HOME_CELL:
                 if (canHomeCellAcceptSource(drag.source, dest.home_cell_index))
-                    moveCardToHomeCell(drag.source, dest.home_cell_index);
+                    moveCardToHomeCell(drag.source, dest.home_cell_index, SDL_TRUE);
                 else
                     resetDragPosition();
                 break;
 
             case ORIGIN_TABLEAU:
-                if (canTableauAcceptSource(drag.source, dest.tableau_index))
-                    moveCardToTableau(drag.source, dest.tableau_index);
+                if (canTableauAcceptSource(drag.source, dest.tableau_index, SDL_FALSE))
+                    moveCardToTableau(drag.source, dest.tableau_index, SDL_TRUE);
                 else
                     resetDragPosition();
                 break;
@@ -571,7 +586,7 @@ void autoMoveCard(Source source)
     {
         if (canHomeCellAcceptSource(source, i))
         {
-            moveCardToHomeCell(source, i);
+            moveCardToHomeCell(source, i, SDL_TRUE);
             return;
         }
     }
@@ -579,9 +594,9 @@ void autoMoveCard(Source source)
     // Check if can move somewhere in the tableau
     for (int i = 0; i < 8; i++)
     {
-        if (canTableauAcceptSource(source, i))
+        if (canTableauAcceptSource(source, i, SDL_TRUE))
         {
-            moveCardToTableau(source, i);
+            moveCardToTableau(source, i, SDL_TRUE);
             return;
         }
     }
@@ -591,7 +606,7 @@ void autoMoveCard(Source source)
     {
         if (canFreeCellAcceptSource(source, i))
         {
-            moveCardToFreeCell(source, i);
+            moveCardToFreeCell(source, i, SDL_TRUE);
             return;
         }
     }
@@ -629,7 +644,7 @@ SDL_bool canHomeCellAcceptSource(Source source, int suit)
     return SDL_FALSE;
 }
 
-SDL_bool canTableauAcceptSource(Source source, int tableau_index)
+SDL_bool canTableauAcceptSource(Source source, int tableau_index, SDL_bool only_king_to_empty)
 {
     // Avoid move to same column
     if (source.origin == ORIGIN_TABLEAU &&
@@ -644,6 +659,9 @@ SDL_bool canTableauAcceptSource(Source source, int tableau_index)
     // If source is king and the column is empty, that's a valid move
     if (source_value == CARD_VALUE_KING && top_card == NULL)
         return SDL_TRUE;
+
+    if (top_card == NULL)
+        return only_king_to_empty ? SDL_FALSE : SDL_TRUE;
 
     int top_color = getCardColor(top_card);
     int top_value = getCardValue(top_card);
@@ -677,7 +695,7 @@ SDL_bool canFreeCellAcceptSource(Source source, int free_cell_index)
     return SDL_FALSE;
 }
 
-void moveCardToHomeCell(Source source, int suit)
+void moveCardToHomeCell(Source source, int suit, SDL_bool record_to_history)
 {
     source.card->target_position = getHomeCellPosition(suit);
     source.card->target_draw_order = getCardValue(source.card);
@@ -685,19 +703,29 @@ void moveCardToHomeCell(Source source, int suit)
     board.home_cells[suit] = source.card;
 
     removeSource(source);
+    
+    if (record_to_history)
+    {
+        Source dest = source;
+        dest.origin = ORIGIN_HOME_CELL;
+        dest.home_cell_index = suit;
+        recordHistory(source, dest);
+    }
 }
 
-void moveCardToTableau(Source source, int tableau_index)
+void moveCardToTableau(Source source, int tableau_index, SDL_bool record_to_history)
 {
     Column *dest_column = &board.tableau[tableau_index];
     Point dest_column_position = getTableauPosition(tableau_index);
+
+    int source_count = 1;
 
     // If source is from tableau, we move a stack
     if (source.origin == ORIGIN_TABLEAU)
     {
         Column *source_column = &board.tableau[source.tableau_index];
 
-        for (int i = source.column_index; i < source_column->count; i++)
+        for (int i = source.column_index; i < source_column->count; i++, source_count++)
         {
             Card *src_card = source_column->cards[i];
 
@@ -716,9 +744,18 @@ void moveCardToTableau(Source source, int tableau_index)
     }
 
     removeSource(source);
+
+    if (record_to_history)
+    {
+        Source dest = source;
+        dest.origin = ORIGIN_TABLEAU;
+        dest.tableau_index = tableau_index;
+        dest.column_index = dest_column->count - source_count + 1;
+        recordHistory(source, dest);
+    }
 }
 
-void moveCardToFreeCell(Source source, int free_cell_index)
+void moveCardToFreeCell(Source source, int free_cell_index, SDL_bool record_to_history)
 {
     source.card->target_position = getFreeCellPosition(free_cell_index);
     source.card->target_draw_order = 0;
@@ -726,6 +763,50 @@ void moveCardToFreeCell(Source source, int free_cell_index)
     board.free_cells[free_cell_index] = source.card;
 
     removeSource(source);
+    
+    if (record_to_history)
+    {
+        Source dest = source;
+        dest.origin = ORIGIN_FREE_CELL;
+        dest.free_cell_index = free_cell_index;
+        recordHistory(source, dest);
+    }
+}
+
+void recordHistory(Source source, Source dest)
+{
+    if (history_count == MAX_UNDO)
+    {
+        memcpy(history, history + 1, sizeof(Action) * (history_count - 1));
+        history_count--;
+    }
+
+    history[history_count++] = (Action){ source, dest };
+}
+
+void undo()
+{
+    if (drag.source.origin != ORIGIN_NONE)
+        return; // Make sure we don't undo while we're dragging a card around!
+
+    if (history_count == 0)
+        return;
+
+    history_count--;
+    Action action = history[history_count];
+
+    switch (action.source.origin)
+    {
+        case ORIGIN_FREE_CELL:
+            moveCardToFreeCell(action.dest, action.source.free_cell_index, SDL_FALSE);
+            break;
+        case ORIGIN_TABLEAU:
+            moveCardToTableau(action.dest, action.source.tableau_index, SDL_FALSE);
+            break;
+        case ORIGIN_HOME_CELL:
+            moveCardToHomeCell(action.dest, action.source.home_cell_index, SDL_FALSE);
+            break;
+    }
 }
 
 Source getSourceAt(Point position)
@@ -845,6 +926,15 @@ void removeSource(Source source)
         case ORIGIN_TABLEAU:
             board.tableau[source.tableau_index].count = source.column_index;
             break;
+        case ORIGIN_HOME_CELL:
+        {
+            Card *card = board.home_cells[source.home_cell_index];
+            if (getCardValue(card) == 0)
+                board.home_cells[source.home_cell_index] = NULL;
+            else
+                board.home_cells[source.home_cell_index] = &board.deck[card->id - 1];
+            break;
+        }
     }
 }
 
@@ -917,6 +1007,8 @@ void newGame(unsigned int seed)
         card->target_draw_order = col->count;
         col->cards[col->count++] = card;
     }
+
+    history_count = 0;
 }
 
 Card *getTableauTopCard(int tableau_index)
