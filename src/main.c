@@ -644,11 +644,57 @@ SDL_bool canHomeCellAcceptSource(Source source, int suit)
     return SDL_FALSE;
 }
 
+int getSourceStackSize(Source source)
+{
+    int source_count = 1;
+
+    if (source.origin == ORIGIN_TABLEAU)
+        source_count = board.tableau[source.tableau_index].count - source.column_index;
+
+    return source_count;
+}
+
+int getEmptyColumnCount(int dest_tableau_index)
+{
+    int empty_count = 0;
+
+    for (int i = 0; i < 8; i++)
+    {
+        if (i == dest_tableau_index)
+            continue;
+        
+        if (board.tableau[i].count == 0)
+            empty_count++;
+    }
+
+    return empty_count;
+}
+
+int getEmptyFreeCellCount()
+{
+    int count = 0;
+
+    for (int i = 0; i < 4; i++)
+        if (board.free_cells[i] == NULL)
+            count++;
+
+    return count;
+}
+
 SDL_bool canTableauAcceptSource(Source source, int tableau_index, SDL_bool only_king_to_empty)
 {
     // Avoid move to same column
     if (source.origin == ORIGIN_TABLEAU &&
         tableau_index == source.tableau_index)
+        return SDL_FALSE;
+
+    // Check if source column is not too big
+    int empty_column_count = getEmptyColumnCount(tableau_index);
+    int free_cell_count = getEmptyFreeCellCount();
+    int allowed_move_count = (free_cell_count + 1);
+    for (int i = 0; i < empty_column_count; ++i)
+        allowed_move_count *= 2;
+    if (getSourceStackSize(source) > allowed_move_count)
         return SDL_FALSE;
 
     Card *top_card = getTableauTopCard(tableau_index);
@@ -834,7 +880,6 @@ Source getSourceAt(Point position)
     for (int i = 0; i < 8; i++)
     {
         Column *column = &board.tableau[i];
-        Point tableau_position = getTableauPosition(i);
         Card *prev_card = NULL;
 
         for (int j = column->count - 1; j >= 0; j--)
