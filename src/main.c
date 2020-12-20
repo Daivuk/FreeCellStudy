@@ -74,6 +74,7 @@ typedef enum
 {
     ORIGIN_NONE,
     ORIGIN_FREE_CELL,
+    ORIGIN_HOME_CELL,
     ORIGIN_TABLEAU
 } Origin;
 
@@ -82,6 +83,7 @@ typedef struct
     Card *card;
     Origin origin;
     int free_cell_index;
+    int home_cell_index;
     int tableau_index;
     int column_index;
 } Source;
@@ -126,6 +128,7 @@ void onMouseDown(Point position);
 void onMouseMove(Point position);
 void onMouseUp(Point position);
 Source getSourceAt(Point position);
+Source getDestAt(Point position);
 void removeSource(Source source);
 int getSourceCardCount(Source source);
 void autoMoveCard(Source source);
@@ -141,6 +144,7 @@ Point getHomeCellPosition(int index);
 Point getTableauPosition(int index);
 Point getPositionInColumn(Point column_position, int card_index);
 SDL_bool cardContainsPoint(Card *card, Point point);
+SDL_bool locationContainsPoint(Point position, Point point);
 
 void newGame();
 Card *getTableauTopCard(int tableau_index);
@@ -381,7 +385,7 @@ void drawFreeCell(int index)
 
 void drawHomeCell(int suit)
 {
-    drawCard(TEXTURE_HOME_CELLS, getHomeCellPosition(suit));
+    drawCard(TEXTURE_HOME_CELLS + suit, getHomeCellPosition(suit));
 }
 
 void drawTableau(int index)
@@ -412,6 +416,19 @@ void onMouseDown(Point position)
 
     drag.source.card->draw_order += 1000;
     drag.source.card->target_draw_order += 1000;
+
+    // If from tableau, set the draw order for the rest of the stack
+    if (drag.source.origin == ORIGIN_TABLEAU)
+    {
+        Column *col = &board.tableau[drag.source.tableau_index];
+
+        for (int i = drag.source.column_index + 1; i < col->count; i++)
+        {
+            Card *card = col->cards[i];
+            card->draw_order += 1000;
+            card->target_draw_order += 1000;
+        }
+    }
 }
 
 void onMouseMove(Point position)
@@ -433,6 +450,59 @@ void onMouseMove(Point position)
         drag.source.card->target_position.y = position.y + drag.drag_offset.y;
         drag.source.card->positionf.x = (float)drag.source.card->target_position.x;
         drag.source.card->positionf.y = (float)drag.source.card->target_position.y;
+
+        // If from tableau, move the rest of the stack along
+        if (drag.source.origin == ORIGIN_TABLEAU)
+        {
+            Column *col = &board.tableau[drag.source.tableau_index];
+            Point position = drag.source.card->target_position;
+
+            for (int i = drag.source.column_index + 1; i < col->count; i++)
+            {
+                position.y += COLUMN_V_OFFSET;
+
+                Card *card = col->cards[i];
+                card->target_position = position;
+                card->positionf.x = (float)position.x;
+                card->positionf.y = (float)position.y;
+            }
+        }
+    }
+}
+
+void resetDragDrawOrder()
+{
+    drag.source.card->target_draw_order = drag.draw_order_on_down;
+
+    // If from tableau, move the rest of the stack along
+    if (drag.source.origin == ORIGIN_TABLEAU)
+    {
+        Column *col = &board.tableau[drag.source.tableau_index];
+        for (int i = drag.source.column_index + 1; i < col->count; i++)
+        {
+            Card *card = col->cards[i];
+            card->target_draw_order = i;
+        }
+    }
+}
+
+void resetDragPosition()
+{
+    drag.source.card->target_position = drag.card_pos_on_down;
+
+    // If from tableau, move the rest of the stack along
+    if (drag.source.origin == ORIGIN_TABLEAU)
+    {
+        Column *col = &board.tableau[drag.source.tableau_index];
+        Point position = drag.source.card->target_position;
+
+        for (int i = drag.source.column_index + 1; i < col->count; i++)
+        {
+            position.y += COLUMN_V_OFFSET;
+
+            Card *card = col->cards[i];
+            card->target_position = position;
+        }
     }
 }
 
@@ -441,18 +511,44 @@ void onMouseUp(Point position)
     if (drag.source.origin == ORIGIN_NONE)
         return;
 
+    resetDragDrawOrder();
+
     if (drag.started_dragging)
     {
-        drag.source.card->target_position = drag.card_pos_on_down;
-        drag.source.card->target_draw_order = drag.draw_order_on_down;
+        // Check if the mouse over card accepts our card
+        Source dest = getDestAt(position);
 
+        switch (dest.origin)
+        {
+            case ORIGIN_FREE_CELL:
+                if (canFreeCellAcceptSource(drag.source, dest.free_cell_index))
+                    moveCardToFreeCell(drag.source, dest.free_cell_index);
+                else
+                    resetDragPosition();
+                break;
 
+            case ORIGIN_HOME_CELL:
+                if (canHomeCellAcceptSource(drag.source, dest.home_cell_index))
+                    moveCardToHomeCell(drag.source, dest.home_cell_index);
+                else
+                    resetDragPosition();
+                break;
+
+            case ORIGIN_TABLEAU:
+                if (canTableauAcceptSource(drag.source, dest.tableau_index))
+                    moveCardToTableau(drag.source, dest.tableau_index);
+                else
+                    resetDragPosition();
+                break;
+
+            case ORIGIN_NONE:
+            default:
+                resetDragPosition();
+                break;
+        }
     }
     else
     {
-        drag.source.card->draw_order = drag.draw_order_on_down;
-        drag.source.card->target_draw_order = drag.draw_order_on_down;
-
         autoMoveCard(drag.source);
     }
 
@@ -649,10 +745,17 @@ Source getSourceAt(Point position)
     {
         Column *column = &board.tableau[i];
         Point tableau_position = getTableauPosition(i);
+        Card *prev_card = NULL;
 
         for (int j = column->count - 1; j >= 0; j--)
         {
             Card *card = column->cards[j];
+
+            // Make sure this is a valid stack
+            if (prev_card)
+                if (getCardValue(card) != getCardValue(prev_card) + 1 ||
+                    getCardColor(card) == getCardColor(prev_card))
+                    break;
 
             if (cardContainsPoint(card, position))
             {
@@ -663,6 +766,58 @@ Source getSourceAt(Point position)
 
                 return source;
             }
+
+            prev_card = card;
+        }
+    }
+
+    source.origin = ORIGIN_NONE;
+    source.card = NULL;
+    return source;
+}
+
+Source getDestAt(Point position)
+{
+    Source source;
+
+    // Free Cells
+    for (int i = 0; i < 4; i++)
+    {
+        if (locationContainsPoint(getFreeCellPosition(i), position))
+        {
+            source.origin = ORIGIN_FREE_CELL;
+            source.free_cell_index = i;
+
+            return source;
+        }
+    }
+
+    // Home Cells
+    for (int i = 0; i < 4; i++)
+    {
+        if (locationContainsPoint(getHomeCellPosition(i), position))
+        {
+            source.origin = ORIGIN_HOME_CELL;
+            source.home_cell_index = i;
+
+            return source;
+        }
+    }
+
+    // Tableau
+    for (int i = 0; i < 8; i++)
+    {
+        Column *col = &board.tableau[i];
+        Point tableau_position = getTableauPosition(i);
+
+        tableau_position.y += COLUMN_V_OFFSET * col->count;
+        if (locationContainsPoint(tableau_position, position))
+        {
+            source.origin = ORIGIN_TABLEAU;
+            source.tableau_index = i;
+            source.column_index = col->count;
+
+            return source;
         }
     }
 
@@ -700,10 +855,15 @@ int getSourceCardCount(Source source)
 
 SDL_bool cardContainsPoint(Card *card, Point point)
 {
-    return (point.x >= card->position.x &&
-            point.y >= card->position.y &&
-            point.x < card->position.x + CARD_WIDTH &&
-            point.y < card->position.y + CARD_HEIGHT) ? SDL_TRUE : SDL_FALSE;
+    return locationContainsPoint(card->position, point);
+}
+
+SDL_bool locationContainsPoint(Point position, Point point)
+{
+    return (point.x >= position.x &&
+            point.y >= position.y &&
+            point.x < position.x + CARD_WIDTH &&
+            point.y < position.y + CARD_HEIGHT) ? SDL_TRUE : SDL_FALSE;
 }
 
 void newGame()
