@@ -30,6 +30,22 @@ void Pile::push(const CardRef& card)
     card->animatePosition(position + Vector2(0, (float)(cards.size() - 1) * 8.0f), (int)cards.size());
 }
 
+bool Pile::isDecreasingOrder() const
+{
+    int prev_value = 14;
+    for (const auto& card : cards)
+    {
+        auto card_value = card->getValue();
+
+        if (card_value >= prev_value)
+            return false;
+
+        prev_value = card_value;
+    }
+
+    return true;
+}
+
 void Pile::resetPositions()
 {
     for (int i = 0, len = (int)cards.size(); i < len; ++i)

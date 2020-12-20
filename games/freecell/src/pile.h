@@ -13,6 +13,7 @@ class Pile
 {
 public:
     Pile(const Vector2& in_position);
+    virtual ~Pile() {};
 
     virtual void draw() {};
     virtual void push(const CardRef& card);
@@ -23,6 +24,8 @@ public:
 
     bool contains(const CardRef& card) const;
     vector<CardRef> grab(const CardRef& card);
+
+    bool isDecreasingOrder() const;
 
 public:
     Vector2 position;

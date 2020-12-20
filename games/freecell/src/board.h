@@ -41,8 +41,18 @@ public:
     bool grabCardStack(const CardRef& card);
     bool isDragStackSizeAllowed(int size, const PileRef& from, const PileRef& to) const;
     bool winCondition() const;
+    bool canSolve() const;
+    void autoSolve();
+
+    TargetRef getTargetLowestValue(int& lowest_value) const;
 
     unsigned int seed = 0;
+
+    bool won = false;
+    int best_turn_count = 0;
+    int now_turn_count = 0;
+    int best_time = 0;
+    int now_time = 0;
 
     vector<CardRef> deck;
     vector<PileRef> piles;

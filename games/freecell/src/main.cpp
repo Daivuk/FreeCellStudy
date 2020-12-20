@@ -12,7 +12,7 @@
 
 void initSettings()
 {
-    oSettings->setGameName("FreeCell");
+    oSettings->setGameName("OFreeCell");
     oSettings->setIsResizableWindow(false);
     oSettings->setResolution({1024, 768});
     oSettings->setShowFPS(false);
@@ -20,8 +20,14 @@ void initSettings()
 
 void init()
 {
+    oSettings->setUserSettingDefault("skin", "0");
+    oSettings->setUserSettingDefault("best_turn_count", "999");
+    oSettings->setUserSettingDefault("best_time", "3599"); // 59:59, 1h
+
     g_resources = make_shared<Resources>();
     g_board = make_shared<Board>();
+
+    g_resources->changeSkin(g_resources->skins[stoi(oSettings->getUserSetting("skin"))]);
 }
 
 void shutdown()
@@ -86,7 +92,10 @@ void renderUI()
             {
                 auto selected = g_resources->skin == g_resources->skins[i];
                 if (ImGui::MenuItem(("Skin " + to_string(i + 1)).c_str(), 0, &selected))
+                {
                     g_resources->changeSkin(g_resources->skins[i]);
+                    oSettings->setUserSetting("skin", to_string(i));
+                }
             }
 
             ImGui::EndMenu();
