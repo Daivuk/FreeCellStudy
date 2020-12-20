@@ -64,6 +64,7 @@ typedef struct
 
 typedef struct
 {
+    unsigned int seed;
     Card deck[52];
     Card *free_cells[4];
     Card *home_cells[4];
@@ -146,7 +147,7 @@ Point getPositionInColumn(Point column_position, int card_index);
 SDL_bool cardContainsPoint(Card *card, Point point);
 SDL_bool locationContainsPoint(Point position, Point point);
 
-void newGame();
+void newGame(unsigned int seed);
 Card *getTableauTopCard(int tableau_index);
 Card *getColumnTopCard(Column *column);
 int getCardValue(Card *card);
@@ -166,7 +167,7 @@ void init()
 {
     initSDL();
     loadTextures();
-    newGame();
+    newGame((unsigned int)time(0));
 }
 
 void initSDL()
@@ -238,6 +239,14 @@ void pollEvents()
             case SDL_MOUSEBUTTONUP:
                 if (e.button.button == SDL_BUTTON_LEFT)
                     onMouseUp((Point){ e.button.x, e.button.y });
+                break;
+            case SDL_KEYDOWN:
+                if (e.key.keysym.sym == SDLK_n && e.key.keysym.mod & KMOD_LCTRL)
+                    newGame((unsigned int)time(0));
+
+                if (e.key.keysym.sym == SDLK_F5)
+                    newGame(board.seed);
+
                 break;
         }
 
@@ -866,7 +875,7 @@ SDL_bool locationContainsPoint(Point position, Point point)
             point.y < position.y + CARD_HEIGHT) ? SDL_TRUE : SDL_FALSE;
 }
 
-void newGame()
+void newGame(unsigned int seed)
 {
     memset(&board, 0, sizeof(board));
 
@@ -881,8 +890,8 @@ void newGame()
         board.deck[i].id = i;
 
     // Randomize seed using current time
-    //srand((unsigned int)time(0));
-    srand(100);
+    board.seed = seed;
+    srand(board.seed);
 
     // Shuffle
     Card *shuffled_deck[52];
