@@ -67,7 +67,6 @@ typedef struct
 typedef struct
 {
     unsigned int seed;
-    time_t start_time;
     Card deck[52];
     Card *free_cells[4];
     Card *home_cells[4];
@@ -111,6 +110,7 @@ typedef struct
 
 // Variables
 SDL_bool is_application_running = SDL_TRUE;
+SDL_bool victory = SDL_FALSE;
 SDL_Window *window = NULL;
 SDL_Renderer *renderer = NULL;
 Board board;
@@ -120,6 +120,8 @@ SDL_Texture *moves_time_texture;
 SDL_Texture *numbers_texture;
 Action history[MAX_UNDO];
 int history_count = 0;
+time_t start_time;
+time_t end_time;
 
 // Prototypes
 void init();
@@ -142,6 +144,7 @@ void drawCard(int id, Point position);
 void onMouseDown(Point position);
 void onMouseMove(Point position);
 void onMouseUp(Point position);
+Source findCard(int id);
 Source getSourceAt(Point position);
 Source getDestAt(Point position);
 void removeSource(Source source);
@@ -183,7 +186,7 @@ void init()
 {
     initSDL();
     loadTextures();
-    newGame((unsigned int)time(0));
+    newGame(1608488838);//(unsigned int)time(0));
 }
 
 void initSDL()
@@ -326,6 +329,50 @@ void update(float delta_time)
         card->position.x = (int)card->positionf.x;
         card->position.y = (int)card->positionf.y;
     }
+
+    // Check for victory
+    if (!victory)
+    {
+        end_time = time(0);
+
+        victory = SDL_TRUE;
+        for (int i = 0; i < 4; i++)
+        {
+            if (board.home_cells[i] == NULL ||
+                getCardValue(board.home_cells[i]) != CARD_VALUE_KING)
+            {
+                victory = SDL_FALSE;
+                break;
+            }
+        }
+
+        if (!victory)
+        {
+            // Try to auto detect victory
+            victory = SDL_TRUE;
+            for (int i = 0; i < 8; i++)
+            {
+                Column *col = &board.tableau[i];
+                int prev_value = CARD_VALUE_KING + 1;
+                for (int j = 0; j < col->count; j++)
+                {
+                    int value = getCardValue(col->cards[j]);
+                    if (value >= prev_value)
+                    {
+                        victory = SDL_FALSE;
+                        break;
+                    }
+                    prev_value = value;
+                }
+            }
+
+            // Auto solve
+            if (victory)
+                for (int i = 0; i < 4; i++)
+                    while (getCardValue(board.free_cells[i]) != CARD_VALUE_KING)
+                        moveCardToHomeCell(findCard(getCardValue(board.free_cells[i]) + 1), i, SDL_TRUE);
+        }
+    }
 }
 
 void drawNumbers(const char *text, Point position)
@@ -354,7 +401,7 @@ void drawNumbers(const char *text, Point position)
 
 void drawScore()
 {
-    char buf[10];
+    char buf[64];
 
     SDL_Rect dst_rect = { WIDTH / 2 - 59 / 2, 45, 59, 72 };
     SDL_RenderCopy(renderer, moves_time_texture, NULL, &dst_rect);
@@ -364,11 +411,17 @@ void drawScore()
     drawNumbers(buf, (Point){ WIDTH / 2, 66 });
 
     // Time
-    int time_diff = (int)(time(0) - board.start_time);
+    int time_diff = (int)(end_time - start_time);
     int minutes = time_diff / 60;
     int seconds = time_diff % 60;
     sprintf(buf, "%i:%02i", minutes, seconds);
     drawNumbers(buf, (Point){ WIDTH / 2, 118 });
+
+    // Seeds, in debug only
+#if defined(_DEBUG)
+    sprintf(buf, "%u", board.seed);
+    drawNumbers(buf, (Point){ 64, 0 });
+#endif
 }
 
 void render()
@@ -482,6 +535,9 @@ void drawCard(int id, Point position)
 
 void onMouseDown(Point position)
 {
+    if (victory)
+        return;
+
     // Get clicked card
     drag.source = getSourceAt(position);
     if (drag.source.origin == ORIGIN_NONE)
@@ -821,7 +877,7 @@ void moveCardToTableau(Source source, int tableau_index, SDL_bool record_to_hist
     Column *dest_column = &board.tableau[tableau_index];
     Point dest_column_position = getTableauPosition(tableau_index);
 
-    int source_count = 1;
+    int source_count = 0;
 
     // If source is from tableau, we move a stack
     if (source.origin == ORIGIN_TABLEAU)
@@ -840,6 +896,8 @@ void moveCardToTableau(Source source, int tableau_index, SDL_bool record_to_hist
     }
     else
     {
+        source_count = 1;
+
         source.card->target_position = getPositionInColumn(dest_column_position, dest_column->count);
         source.card->target_draw_order = dest_column->count;
 
@@ -853,7 +911,7 @@ void moveCardToTableau(Source source, int tableau_index, SDL_bool record_to_hist
         Source dest = source;
         dest.origin = ORIGIN_TABLEAU;
         dest.tableau_index = tableau_index;
-        dest.column_index = dest_column->count - source_count + 1;
+        dest.column_index = dest_column->count - source_count;
         recordHistory(source, dest);
     }
 }
@@ -889,6 +947,9 @@ void recordHistory(Source source, Source dest)
 
 void undo()
 {
+    if (victory)
+        return;
+
     if (drag.source.origin != ORIGIN_NONE)
         return; // Make sure we don't undo while we're dragging a card around!
 
@@ -910,6 +971,62 @@ void undo()
             moveCardToHomeCell(action.dest, action.source.home_cell_index, SDL_FALSE);
             break;
     }
+}
+
+Source findCard(int id)
+{
+    Source source;
+
+    // Free Cells
+    for (int i = 0; i < 4; i++)
+    {
+        Card *card = board.free_cells[i];
+        if (card == NULL)
+            continue;
+
+        if (card->id == id)
+        {
+            source.card = card;
+            source.origin = ORIGIN_FREE_CELL;
+            source.free_cell_index = i;
+
+            return source;
+        }
+    }
+
+    // Tableau
+    for (int i = 0; i < 8; i++)
+    {
+        Column *column = &board.tableau[i];
+        Card *prev_card = NULL;
+
+        for (int j = column->count - 1; j >= 0; j--)
+        {
+            Card *card = column->cards[j];
+
+            // Make sure this is a valid stack
+            if (prev_card)
+                if (getCardValue(card) != getCardValue(prev_card) + 1 ||
+                    getCardColor(card) == getCardColor(prev_card))
+                    break;
+
+            if (card->id == id)
+            {
+                source.card = card;
+                source.origin = ORIGIN_TABLEAU;
+                source.tableau_index = i;
+                source.column_index = j;
+
+                return source;
+            }
+
+            prev_card = card;
+        }
+    }
+
+    source.origin = ORIGIN_NONE;
+    source.card = NULL;
+    return source;
 }
 
 Source getSourceAt(Point position)
@@ -1111,7 +1228,8 @@ void newGame(unsigned int seed)
     }
 
     history_count = 0;
-    board.start_time = time(0);
+    start_time = end_time = time(0);
+    victory = SDL_FALSE;
 }
 
 Card *getTableauTopCard(int tableau_index)
@@ -1131,6 +1249,9 @@ Card *getColumnTopCard(Column *column)
 
 int getCardValue(Card *card)
 {
+    if (card == NULL)
+        return -1;
+
     return card->id % 13;
 }
 
