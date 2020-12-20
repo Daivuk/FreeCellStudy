@@ -186,7 +186,7 @@ void init()
 {
     initSDL();
     loadTextures();
-    newGame(1608488838);//(unsigned int)time(0));
+    newGame((unsigned int)time(0));
 }
 
 void initSDL()
@@ -368,9 +368,17 @@ void update(float delta_time)
 
             // Auto solve
             if (victory)
+            {
                 for (int i = 0; i < 4; i++)
-                    while (getCardValue(board.free_cells[i]) != CARD_VALUE_KING)
-                        moveCardToHomeCell(findCard(getCardValue(board.free_cells[i]) + 1), i, SDL_TRUE);
+                {
+                    while (getCardValue(board.home_cells[i]) != CARD_VALUE_KING)
+                    {
+                        Source source = findCard((getCardValue(board.home_cells[i]) + 1) + i * 13);
+                        if (source.card)
+                            moveCardToHomeCell(source, i, SDL_TRUE);
+                    }
+                }
+            }
         }
     }
 }
@@ -998,17 +1006,10 @@ Source findCard(int id)
     for (int i = 0; i < 8; i++)
     {
         Column *column = &board.tableau[i];
-        Card *prev_card = NULL;
 
         for (int j = column->count - 1; j >= 0; j--)
         {
             Card *card = column->cards[j];
-
-            // Make sure this is a valid stack
-            if (prev_card)
-                if (getCardValue(card) != getCardValue(prev_card) + 1 ||
-                    getCardColor(card) == getCardColor(prev_card))
-                    break;
 
             if (card->id == id)
             {
@@ -1019,8 +1020,6 @@ Source findCard(int id)
 
                 return source;
             }
-
-            prev_card = card;
         }
     }
 
@@ -1206,7 +1205,7 @@ void newGame(unsigned int seed)
     Card *shuffled_deck[52];
     for (int i = 0; i < 52; i++)
         shuffled_deck[i] = &board.deck[i];
-
+    
     for (int i = 52; i > 0; i--)
     {
         int random_index = rand() % i;
