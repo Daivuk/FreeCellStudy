@@ -67,11 +67,13 @@ typedef struct
 typedef struct
 {
     unsigned int seed;
+    time_t start_time;
     Card deck[52];
     Card *free_cells[4];
     Card *home_cells[4];
     Column tableau[8];
 } Board;
+
 
 typedef enum
 {
@@ -114,6 +116,8 @@ SDL_Renderer *renderer = NULL;
 Board board;
 Drag drag = { 0 };
 SDL_Texture *textures[TEXTURE_COUNT];
+SDL_Texture *moves_time_texture;
+SDL_Texture *numbers_texture;
 Action history[MAX_UNDO];
 int history_count = 0;
 
@@ -191,12 +195,17 @@ void initSDL()
 
 void loadTextures()
 {
+    // Cards
     for (int i = 0; i < 58; i++)
     {
         char filename[120];
         sprintf(filename, "assets/cards/%d.png", i);
         textures[i] = loadTexture(filename);
     }
+
+    // Text
+    moves_time_texture = loadTexture("assets/moves_time.png");
+    numbers_texture = loadTexture("assets/numbers.png");
 }
 
 SDL_Texture *loadTexture(const char *filename)
@@ -216,6 +225,10 @@ SDL_Texture *loadTexture(const char *filename)
 
 void shutdown()
 {
+    SDL_DestroyTexture(numbers_texture);
+    SDL_DestroyTexture(moves_time_texture);
+    for (int i = 0; i < 58; i++)
+        SDL_DestroyTexture(textures[i]);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
@@ -315,10 +328,54 @@ void update(float delta_time)
     }
 }
 
+void drawNumbers(const char *text, Point position)
+{
+    int len = (int)strlen(text);
+    position.x -= len * 10 / 2;
+
+    for (int i = 0; i < len; i++)
+    {
+        char c = text[i];
+
+        int offset = 0;
+        if (c == ':')
+            offset = 10;
+        else
+            offset = c - '0';
+
+        SDL_Rect src_rect = { offset * 12, 0, 12, 16 };
+        SDL_Rect dst_rect = { position.x, position.y, 12, 16 };
+
+        SDL_RenderCopy(renderer, numbers_texture, &src_rect, &dst_rect);
+
+        position.x += 10;
+    }
+}
+
+void drawScore()
+{
+    char buf[10];
+
+    SDL_Rect dst_rect = { WIDTH / 2 - 59 / 2, 45, 59, 72 };
+    SDL_RenderCopy(renderer, moves_time_texture, NULL, &dst_rect);
+
+    // Moves
+    sprintf(buf, "%i", history_count);
+    drawNumbers(buf, (Point){ WIDTH / 2, 66 });
+
+    // Time
+    int time_diff = (int)(time(0) - board.start_time);
+    int minutes = time_diff / 60;
+    int seconds = time_diff % 60;
+    sprintf(buf, "%i:%02i", minutes, seconds);
+    drawNumbers(buf, (Point){ WIDTH / 2, 118 });
+}
+
 void render()
 {
     clearScreen();
     drawBoard(&board);
+    drawScore();
     SDL_RenderPresent(renderer);
 }
 
@@ -419,8 +476,8 @@ void drawTableau(int index)
 
 void drawCard(int id, Point position)
 {
-    SDL_Rect src_rect = { position.x, position.y, CARD_WIDTH, CARD_HEIGHT };
-    SDL_RenderCopy(renderer, textures[id], NULL, &src_rect);
+    SDL_Rect dst_rect = { position.x, position.y, CARD_WIDTH, CARD_HEIGHT };
+    SDL_RenderCopy(renderer, textures[id], NULL, &dst_rect);
 }
 
 void onMouseDown(Point position)
@@ -1054,6 +1111,7 @@ void newGame(unsigned int seed)
     }
 
     history_count = 0;
+    board.start_time = time(0);
 }
 
 Card *getTableauTopCard(int tableau_index)
