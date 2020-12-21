@@ -73,7 +73,6 @@ typedef struct
     Column tableau[8];
 } Board;
 
-
 typedef enum
 {
     ORIGIN_NONE,
