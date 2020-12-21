@@ -107,6 +107,12 @@ typedef struct
     Source dest;
 } Action;
 
+typedef struct
+{
+    int count;
+    Action actions[MAX_UNDO];
+} History;
+
 // Variables
 SDL_bool is_application_running = SDL_TRUE;
 SDL_bool victory = SDL_FALSE;
@@ -117,97 +123,323 @@ Drag drag = { 0 };
 SDL_Texture *textures[TEXTURE_COUNT];
 SDL_Texture *moves_time_texture;
 SDL_Texture *numbers_texture;
-Action history[MAX_UNDO];
-int history_count = 0;
+History history;
 time_t start_time;
 time_t end_time;
 
-// Prototypes
-void init();
-void initSDL();
-void loadTextures();
-SDL_Texture *loadTexture(const char *filename);
-void shutdown();
-
-void mainLoop();
-void pollEvents();
-void update(float delta_time);
-void render();
-void clearScreen();
-void drawBoard(Board *board);
-void drawFreeCell(int index);
-void drawHomeCell(int suit);
-void drawTableau(int index);
-void drawCard(int id, Point position);
-
-void onMouseDown(Point position);
-void onMouseMove(Point position);
-void onMouseUp(Point position);
-Source findCard(int id);
-Source getSourceAt(Point position);
-Source getDestAt(Point position);
-void removeSource(Source source);
-int getSourceCardCount(Source source);
-void autoMoveCard(Source source);
-SDL_bool canHomeCellAcceptSource(Source source, int suit);
-SDL_bool canTableauAcceptSource(Source source, int tableau_index, SDL_bool only_king_to_empty);
-SDL_bool canFreeCellAcceptSource(Source source, int free_cell_index);
-void moveCardToHomeCell(Source source, int suit, SDL_bool record_to_history);
-void moveCardToTableau(Source source, int tableau_index, SDL_bool record_to_history);
-void moveCardToFreeCell(Source source, int free_cell_index, SDL_bool record_to_history);
-void undo();
-void recordHistory(Source source, Source dest);
-
-Point getFreeCellPosition(int index);
-Point getHomeCellPosition(int index);
-Point getTableauPosition(int index);
-Point getPositionInColumn(Point column_position, int card_index);
-SDL_bool cardContainsPoint(Card *card, Point point);
-SDL_bool locationContainsPoint(Point position, Point point);
-
-void newGame(unsigned int seed);
-Card *getTableauTopCard(int tableau_index);
-Card *getColumnTopCard(Column *column);
-int getCardValue(Card *card);
-int getCardSuit(Card *card);
-int getCardColor(Card *card);
-
-int main(int argc, char *argv[])
+// Functions
+SDL_bool isHistoryFull()
 {
-    init();
-    mainLoop();
-    shutdown();
-
-    return 0;
+    return (history.count == MAX_UNDO) ? SDL_TRUE : SDL_FALSE;
 }
 
-void init()
+void popHistoryFront()
 {
-    initSDL();
-    loadTextures();
-    newGame((unsigned int)time(0));
+    memcpy(history.actions, history.actions + 1, sizeof(Action) * ((size_t)history.count - 1));
+    history.count--;
 }
 
-void initSDL()
+void addActionToHistory(Action action)
 {
-    SDL_Init(SDL_INIT_VIDEO);
-    window = SDL_CreateWindow("CFreeCell", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WIDTH, HEIGHT, 0);
-    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC | SDL_RENDERER_TARGETTEXTURE);
+    history.actions[history.count++] = action;
 }
 
-void loadTextures()
+void recordHistory(Source source, Source dest)
 {
-    // Cards
-    for (int i = 0; i < 58; i++)
+    if (isHistoryFull())
+        popHistoryFront();
+
+    addActionToHistory((Action){ source, dest });
+}
+
+Card *getColumnTopCard(Column *column)
+{
+    Card *top_card = NULL;
+    if (column->count)
+        top_card = column->cards[column->count - 1];
+
+    return top_card;
+}
+
+Card *getTableauTopCard(int tableau_index)
+{
+    Column *column = &board.tableau[tableau_index];
+    return getColumnTopCard(column);
+}
+
+int getCardValue(Card *card)
+{
+    if (card == NULL)
+        return -1;
+
+    return card->id % 13;
+}
+
+int getCardSuit(Card *card)
+{
+    return card->id / 13;
+}
+
+int getCardColor(Card *card)
+{
+    return card->id / 26;
+}
+
+Point getFreeCellPosition(int index)
+{
+    return (Point){
+        FREE_CELL_X + (CARD_WIDTH + FREE_HOME_H_SPACING) * index,
+        FREE_HOME_Y
+    };
+}
+
+Point getHomeCellPosition(int index)
+{
+    return (Point){
+        HOME_CELL_X + (CARD_WIDTH + FREE_HOME_H_SPACING) * index,
+        FREE_HOME_Y
+    };
+}
+
+Point getTableauPosition(int index)
+{
+    return (Point){
+        TABLEAU_X + (CARD_WIDTH + TABLEAU_H_SPACING) * index,
+        TABLEAU_Y
+    };
+}
+
+Point getPositionInColumn(Point column_position, int card_index)
+{
+    return (Point){
+        column_position.x,
+        column_position.y + COLUMN_V_OFFSET * card_index
+    };
+}
+
+int getSourceCardCount(Source source)
+{
+    switch (source.origin)
     {
-        char filename[120];
-        sprintf(filename, "assets/cards/%d.png", i);
-        textures[i] = loadTexture(filename);
+        case ORIGIN_FREE_CELL:
+            return 1;
+        case ORIGIN_TABLEAU:
+            return board.tableau[source.tableau_index].count - source.column_index;
+        default:
+        case ORIGIN_NONE:
+            return 0;
+    }
+}
+
+SDL_bool locationContainsPoint(Point position, Point point)
+{
+    return (point.x >= position.x &&
+            point.y >= position.y &&
+            point.x < position.x + CARD_WIDTH &&
+            point.y < position.y + CARD_HEIGHT) ? SDL_TRUE : SDL_FALSE;
+}
+
+SDL_bool cardContainsPoint(Card *card, Point point)
+{
+    return locationContainsPoint(card->position, point);
+}
+
+SDL_bool canHomeCellAcceptSource(Source source, int suit)
+{
+    // Needs to be same suit
+    if (getCardSuit(source.card) != suit)
+        return SDL_FALSE;
+
+    // If the source has more than 1 card (From the tableau, not last card of column),
+    // then we cannot accept it
+    if (getSourceCardCount(source) > 1)
+        return SDL_FALSE;
+
+    Card *home_cell_card = board.home_cells[suit];
+    int source_value = getCardValue(source.card);
+
+    // If home cell empty and source is ACE, we're good
+    if (home_cell_card == NULL)
+    {
+        if (source_value == CARD_VALUE_ACE)
+            return SDL_TRUE;
+        else
+            return SDL_FALSE; // Otherwise, we don't accept it
     }
 
-    // Text
-    moves_time_texture = loadTexture("assets/moves_time.png");
-    numbers_texture = loadTexture("assets/numbers.png");
+    int home_value = getCardValue(home_cell_card);
+
+    // If source value is one more than home value, put it there.
+    if (source_value == home_value + 1)
+        return SDL_TRUE;
+
+    return SDL_FALSE;
+}
+
+int getSourceStackSize(Source source)
+{
+    int source_count = 1;
+
+    if (source.origin == ORIGIN_TABLEAU)
+        source_count = board.tableau[source.tableau_index].count - source.column_index;
+
+    return source_count;
+}
+
+int getEmptyColumnCount(int dest_tableau_index)
+{
+    int empty_count = 0;
+
+    for (int i = 0; i < 8; i++)
+    {
+        if (i == dest_tableau_index)
+            continue;
+        
+        if (board.tableau[i].count == 0)
+            empty_count++;
+    }
+
+    return empty_count;
+}
+
+int getEmptyFreeCellCount()
+{
+    int count = 0;
+
+    for (int i = 0; i < 4; i++)
+        if (board.free_cells[i] == NULL)
+            count++;
+
+    return count;
+}
+
+Source findCard(int id)
+{
+    Source source;
+
+    // Free Cells
+    for (int i = 0; i < 4; i++)
+    {
+        Card *card = board.free_cells[i];
+        if (card == NULL)
+            continue;
+
+        if (card->id == id)
+        {
+            source.card = card;
+            source.origin = ORIGIN_FREE_CELL;
+            source.free_cell_index = i;
+
+            return source;
+        }
+    }
+
+    // Tableau
+    for (int i = 0; i < 8; i++)
+    {
+        Column *column = &board.tableau[i];
+
+        for (int j = column->count - 1; j >= 0; j--)
+        {
+            Card *card = column->cards[j];
+
+            if (card->id == id)
+            {
+                source.card = card;
+                source.origin = ORIGIN_TABLEAU;
+                source.tableau_index = i;
+                source.column_index = j;
+
+                return source;
+            }
+        }
+    }
+
+    source.origin = ORIGIN_NONE;
+    source.card = NULL;
+    return source;
+}
+
+SDL_bool canTableauAcceptSource(Source source, int tableau_index, SDL_bool only_king_to_empty)
+{
+    // Avoid move to same column
+    if (source.origin == ORIGIN_TABLEAU &&
+        tableau_index == source.tableau_index)
+        return SDL_FALSE;
+
+    // Check if source column is not too big
+    int empty_column_count = getEmptyColumnCount(tableau_index);
+    int free_cell_count = getEmptyFreeCellCount();
+    int allowed_move_count = (free_cell_count + 1);
+    for (int i = 0; i < empty_column_count; ++i)
+        allowed_move_count *= 2;
+    if (getSourceStackSize(source) > allowed_move_count)
+        return SDL_FALSE;
+
+    Card *top_card = getTableauTopCard(tableau_index);
+
+    int source_color = getCardColor(source.card);
+    int source_value = getCardValue(source.card);
+
+    // If source is king and the column is empty, that's a valid move
+    if (source_value == CARD_VALUE_KING && top_card == NULL)
+        return SDL_TRUE;
+
+    if (top_card == NULL)
+        return only_king_to_empty ? SDL_FALSE : SDL_TRUE;
+
+    int top_color = getCardColor(top_card);
+    int top_value = getCardValue(top_card);
+
+    // If same color, invalid move
+    if (source_color == top_color)
+        return SDL_FALSE;
+
+    // Valid if the source value is stack - 1
+    if (source_value == top_value - 1)
+        return SDL_TRUE;
+
+    return SDL_FALSE;
+}
+
+SDL_bool canFreeCellAcceptSource(Source source, int free_cell_index)
+{
+    // Avoid move to same free cell
+    if (source.origin == ORIGIN_FREE_CELL &&
+        free_cell_index == source.free_cell_index)
+        return SDL_FALSE;
+
+    // If the source has more than 1 card (From the tableau, not last card of column),
+    // then we cannot accept it
+    if (getSourceCardCount(source) > 1)
+        return SDL_FALSE;
+
+    if (board.free_cells[free_cell_index] == NULL)
+        return SDL_TRUE;
+
+    return SDL_FALSE;
+}
+
+void removeSource(Source source)
+{
+    switch (source.origin)
+    {
+        case ORIGIN_FREE_CELL:
+            board.free_cells[source.free_cell_index] = NULL;
+            break;
+        case ORIGIN_TABLEAU:
+            board.tableau[source.tableau_index].count = source.column_index;
+            break;
+        case ORIGIN_HOME_CELL:
+        {
+            Card *card = board.home_cells[source.home_cell_index];
+            if (getCardValue(card) == 0)
+                board.home_cells[source.home_cell_index] = NULL;
+            else
+                board.home_cells[source.home_cell_index] = &board.deck[card->id - 1];
+            break;
+        }
+    }
 }
 
 SDL_Texture *loadTexture(const char *filename)
@@ -225,6 +457,83 @@ SDL_Texture *loadTexture(const char *filename)
     return texture;
 }
 
+void loadTextures()
+{
+    // Cards
+    for (int i = 0; i < 58; i++)
+    {
+        char filename[120];
+        sprintf(filename, "assets/cards/%d.png", i);
+        textures[i] = loadTexture(filename);
+    }
+
+    // Text
+    moves_time_texture = loadTexture("assets/moves_time.png");
+    numbers_texture = loadTexture("assets/numbers.png");
+}
+
+void initSDL()
+{
+    SDL_Init(SDL_INIT_VIDEO);
+    window = SDL_CreateWindow("CFreeCell", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WIDTH, HEIGHT, 0);
+    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC | SDL_RENDERER_TARGETTEXTURE);
+}
+
+void newGame(unsigned int seed)
+{
+    memset(&board, 0, sizeof(board));
+
+    for (int i = 0; i < 4; i++)
+        board.free_cells[i] = NULL;
+
+    for (int i = 0; i < 4; i++)
+        board.home_cells[i] = NULL;
+
+    // Init deck
+    for (int i = 0; i < 52; i++)
+        board.deck[i].id = i;
+
+    // Randomize seed using current time
+    board.seed = seed;
+    srand(board.seed);
+
+    // Shuffle
+    Card *shuffled_deck[52];
+    for (int i = 0; i < 52; i++)
+        shuffled_deck[i] = &board.deck[i];
+    
+    for (int i = 52; i > 0; i--)
+    {
+        int random_index = rand() % i;
+
+        Card *tmp = shuffled_deck[random_index];
+        shuffled_deck[random_index] = shuffled_deck[i - 1];
+        shuffled_deck[i - 1] = tmp;
+    }
+
+    // Distribute shuffled deck into the tableau
+    for (int i = 0; i < 52; i++)
+    {
+        Column *col = &board.tableau[i % 8];
+        Card *card = shuffled_deck[i];
+        Point column_position = getTableauPosition(i % 8);
+        card->target_position = getPositionInColumn(column_position, col->count);
+        card->target_draw_order = col->count;
+        col->cards[col->count++] = card;
+    }
+
+    history.count = 0;
+    start_time = end_time = time(0);
+    victory = SDL_FALSE;
+}
+
+void init()
+{
+    initSDL();
+    loadTextures();
+    newGame((unsigned int)time(0));
+}
+
 void shutdown()
 {
     SDL_DestroyTexture(numbers_texture);
@@ -236,13 +545,410 @@ void shutdown()
     SDL_Quit();
 }
 
-void mainLoop()
+void resetDragDrawOrder()
 {
-    while (is_application_running)
+    drag.source.card->target_draw_order = drag.draw_order_on_down;
+
+    // If from tableau, move the rest of the stack along
+    if (drag.source.origin == ORIGIN_TABLEAU)
     {
-        pollEvents();
-        update(1.f / 60.f);
-        render();
+        Column *col = &board.tableau[drag.source.tableau_index];
+        for (int i = drag.source.column_index + 1; i < col->count; i++)
+        {
+            Card *card = col->cards[i];
+            card->target_draw_order = i;
+        }
+    }
+}
+
+void resetDragPosition()
+{
+    drag.source.card->target_position = drag.card_pos_on_down;
+
+    // If from tableau, move the rest of the stack along
+    if (drag.source.origin == ORIGIN_TABLEAU)
+    {
+        Column *col = &board.tableau[drag.source.tableau_index];
+        Point position = drag.source.card->target_position;
+
+        for (int i = drag.source.column_index + 1; i < col->count; i++)
+        {
+            position.y += COLUMN_V_OFFSET;
+
+            Card *card = col->cards[i];
+            card->target_position = position;
+        }
+    }
+}
+
+
+Source getSourceAt(Point position)
+{
+    Source source;
+
+    // Free Cells
+    for (int i = 0; i < 4; i++)
+    {
+        Card *card = board.free_cells[i];
+        if (card == NULL)
+            continue;
+
+        if (cardContainsPoint(card, position))
+        {
+            source.card = card;
+            source.origin = ORIGIN_FREE_CELL;
+            source.free_cell_index = i;
+
+            return source;
+        }
+    }
+
+    // Tableau
+    for (int i = 0; i < 8; i++)
+    {
+        Column *column = &board.tableau[i];
+        Card *prev_card = NULL;
+
+        for (int j = column->count - 1; j >= 0; j--)
+        {
+            Card *card = column->cards[j];
+
+            // Make sure this is a valid stack
+            if (prev_card)
+                if (getCardValue(card) != getCardValue(prev_card) + 1 ||
+                    getCardColor(card) == getCardColor(prev_card))
+                    break;
+
+            if (cardContainsPoint(card, position))
+            {
+                source.card = card;
+                source.origin = ORIGIN_TABLEAU;
+                source.tableau_index = i;
+                source.column_index = j;
+
+                return source;
+            }
+
+            prev_card = card;
+        }
+    }
+
+    source.origin = ORIGIN_NONE;
+    source.card = NULL;
+    return source;
+}
+
+Source getDestAt(Point position)
+{
+    Source source;
+
+    // Free Cells
+    for (int i = 0; i < 4; i++)
+    {
+        if (locationContainsPoint(getFreeCellPosition(i), position))
+        {
+            source.origin = ORIGIN_FREE_CELL;
+            source.free_cell_index = i;
+
+            return source;
+        }
+    }
+
+    // Home Cells
+    for (int i = 0; i < 4; i++)
+    {
+        if (locationContainsPoint(getHomeCellPosition(i), position))
+        {
+            source.origin = ORIGIN_HOME_CELL;
+            source.home_cell_index = i;
+
+            return source;
+        }
+    }
+
+    // Tableau
+    for (int i = 0; i < 8; i++)
+    {
+        Column *col = &board.tableau[i];
+        Point tableau_position = getTableauPosition(i);
+
+        tableau_position.y += COLUMN_V_OFFSET * col->count;
+        if (locationContainsPoint(tableau_position, position))
+        {
+            source.origin = ORIGIN_TABLEAU;
+            source.tableau_index = i;
+            source.column_index = col->count;
+
+            return source;
+        }
+    }
+
+    source.origin = ORIGIN_NONE;
+    source.card = NULL;
+    return source;
+}
+
+void moveCardToHomeCell(Source source, int suit, SDL_bool record_to_history)
+{
+    source.card->target_position = getHomeCellPosition(suit);
+    source.card->target_draw_order = getCardValue(source.card);
+
+    board.home_cells[suit] = source.card;
+
+    removeSource(source);
+    
+    if (record_to_history)
+    {
+        Source dest = source;
+        dest.origin = ORIGIN_HOME_CELL;
+        dest.home_cell_index = suit;
+        recordHistory(source, dest);
+    }
+}
+
+void moveCardToTableau(Source source, int tableau_index, SDL_bool record_to_history)
+{
+    Column *dest_column = &board.tableau[tableau_index];
+    Point dest_column_position = getTableauPosition(tableau_index);
+
+    int source_count = 0;
+
+    // If source is from tableau, we move a stack
+    if (source.origin == ORIGIN_TABLEAU)
+    {
+        Column *source_column = &board.tableau[source.tableau_index];
+
+        for (int i = source.column_index; i < source_column->count; i++, source_count++)
+        {
+            Card *src_card = source_column->cards[i];
+
+            src_card->target_position = getPositionInColumn(dest_column_position, dest_column->count);
+            src_card->target_draw_order = dest_column->count;
+
+            dest_column->cards[dest_column->count++] = src_card;
+        }
+    }
+    else
+    {
+        source_count = 1;
+
+        source.card->target_position = getPositionInColumn(dest_column_position, dest_column->count);
+        source.card->target_draw_order = dest_column->count;
+
+        dest_column->cards[dest_column->count++] = source.card;
+    }
+
+    removeSource(source);
+
+    if (record_to_history)
+    {
+        Source dest = source;
+        dest.origin = ORIGIN_TABLEAU;
+        dest.tableau_index = tableau_index;
+        dest.column_index = dest_column->count - source_count;
+        recordHistory(source, dest);
+    }
+}
+
+void moveCardToFreeCell(Source source, int free_cell_index, SDL_bool record_to_history)
+{
+    source.card->target_position = getFreeCellPosition(free_cell_index);
+    source.card->target_draw_order = 0;
+
+    board.free_cells[free_cell_index] = source.card;
+
+    removeSource(source);
+    
+    if (record_to_history)
+    {
+        Source dest = source;
+        dest.origin = ORIGIN_FREE_CELL;
+        dest.free_cell_index = free_cell_index;
+        recordHistory(source, dest);
+    }
+}
+
+void autoMoveCard(Source source)
+{
+    // Home cells priority
+    for (int i = 0; i < 4; i++)
+    {
+        if (canHomeCellAcceptSource(source, i))
+        {
+            moveCardToHomeCell(source, i, SDL_TRUE);
+            return;
+        }
+    }
+
+    // Check if can move somewhere in the tableau
+    for (int i = 0; i < 8; i++)
+    {
+        if (canTableauAcceptSource(source, i, SDL_TRUE))
+        {
+            moveCardToTableau(source, i, SDL_TRUE);
+            return;
+        }
+    }
+
+    // Finally, if single card, move to Free Cells
+    for (int i = 0; i < 4; i++)
+    {
+        if (canFreeCellAcceptSource(source, i))
+        {
+            moveCardToFreeCell(source, i, SDL_TRUE);
+            return;
+        }
+    }
+}
+
+void onMouseDown(Point position)
+{
+    if (victory)
+        return;
+
+    // Get clicked card
+    drag.source = getSourceAt(position);
+    if (drag.source.origin == ORIGIN_NONE)
+        return;
+
+    drag.drag_offset.x = drag.source.card->position.x - position.x;
+    drag.drag_offset.y = drag.source.card->position.y - position.y;
+
+    drag.mouse_pos_on_down = position;
+    drag.card_pos_on_down = drag.source.card->position;
+    drag.draw_order_on_down = drag.source.card->draw_order;
+    drag.started_dragging = SDL_FALSE;
+
+    drag.source.card->draw_order += 1000;
+    drag.source.card->target_draw_order += 1000;
+
+    // If from tableau, set the draw order for the rest of the stack
+    if (drag.source.origin == ORIGIN_TABLEAU)
+    {
+        Column *col = &board.tableau[drag.source.tableau_index];
+
+        for (int i = drag.source.column_index + 1; i < col->count; i++)
+        {
+            Card *card = col->cards[i];
+            card->draw_order += 1000;
+            card->target_draw_order += 1000;
+        }
+    }
+}
+
+void onMouseMove(Point position)
+{
+    if (drag.source.origin == ORIGIN_NONE)
+        return;
+
+    Point drag_diff = {
+        position.x - drag.mouse_pos_on_down.x,
+        position.y - drag.mouse_pos_on_down.y
+    };
+
+    if (abs(drag_diff.x) > 3 || abs(drag_diff.y) > 3)
+        drag.started_dragging = SDL_TRUE;
+
+    if (drag.started_dragging)
+    {
+        drag.source.card->target_position.x = position.x + drag.drag_offset.x;
+        drag.source.card->target_position.y = position.y + drag.drag_offset.y;
+        drag.source.card->positionf.x = (float)drag.source.card->target_position.x;
+        drag.source.card->positionf.y = (float)drag.source.card->target_position.y;
+
+        // If from tableau, move the rest of the stack along
+        if (drag.source.origin == ORIGIN_TABLEAU)
+        {
+            Column *col = &board.tableau[drag.source.tableau_index];
+            Point position = drag.source.card->target_position;
+
+            for (int i = drag.source.column_index + 1; i < col->count; i++)
+            {
+                position.y += COLUMN_V_OFFSET;
+
+                Card *card = col->cards[i];
+                card->target_position = position;
+                card->positionf.x = (float)position.x;
+                card->positionf.y = (float)position.y;
+            }
+        }
+    }
+}
+
+void onMouseUp(Point position)
+{
+    if (drag.source.origin == ORIGIN_NONE)
+        return;
+
+    resetDragDrawOrder();
+
+    if (drag.started_dragging)
+    {
+        // Check if the mouse over card accepts our card
+        Source dest = getDestAt(position);
+
+        switch (dest.origin)
+        {
+            case ORIGIN_FREE_CELL:
+                if (canFreeCellAcceptSource(drag.source, dest.free_cell_index))
+                    moveCardToFreeCell(drag.source, dest.free_cell_index, SDL_TRUE);
+                else
+                    resetDragPosition();
+                break;
+
+            case ORIGIN_HOME_CELL:
+                if (canHomeCellAcceptSource(drag.source, dest.home_cell_index))
+                    moveCardToHomeCell(drag.source, dest.home_cell_index, SDL_TRUE);
+                else
+                    resetDragPosition();
+                break;
+
+            case ORIGIN_TABLEAU:
+                if (canTableauAcceptSource(drag.source, dest.tableau_index, SDL_FALSE))
+                    moveCardToTableau(drag.source, dest.tableau_index, SDL_TRUE);
+                else
+                    resetDragPosition();
+                break;
+
+            case ORIGIN_NONE:
+            default:
+                resetDragPosition();
+                break;
+        }
+    }
+    else
+    {
+        autoMoveCard(drag.source);
+    }
+
+    drag.source.origin = ORIGIN_NONE;
+}
+
+void undo()
+{
+    if (victory)
+        return;
+
+    if (drag.source.origin != ORIGIN_NONE)
+        return; // Make sure we don't undo while we're dragging a card around!
+
+    if (history.count == 0)
+        return;
+
+    history.count--;
+    Action action = history.actions[history.count];
+
+    switch (action.source.origin)
+    {
+        case ORIGIN_FREE_CELL:
+            moveCardToFreeCell(action.dest, action.source.free_cell_index, SDL_FALSE);
+            break;
+        case ORIGIN_TABLEAU:
+            moveCardToTableau(action.dest, action.source.tableau_index, SDL_FALSE);
+            break;
+        case ORIGIN_HOME_CELL:
+            moveCardToHomeCell(action.dest, action.source.home_cell_index, SDL_FALSE);
+            break;
     }
 }
 
@@ -414,7 +1120,7 @@ void drawScore()
     SDL_RenderCopy(renderer, moves_time_texture, NULL, &dst_rect);
 
     // Moves
-    sprintf(buf, "%i", history_count);
+    sprintf(buf, "%i", history.count);
     drawNumbers(buf, (Point){ WIDTH / 2, 66 });
 
     // Time
@@ -431,18 +1137,31 @@ void drawScore()
 #endif
 }
 
-void render()
-{
-    clearScreen();
-    drawBoard(&board);
-    drawScore();
-    SDL_RenderPresent(renderer);
-}
-
 void clearScreen()
 {
     SDL_SetRenderDrawColor(renderer, 53, 101, 77, 255);
     SDL_RenderClear(renderer);
+}
+
+void drawCard(int id, Point position)
+{
+    SDL_Rect dst_rect = { position.x, position.y, CARD_WIDTH, CARD_HEIGHT };
+    SDL_RenderCopy(renderer, textures[id], NULL, &dst_rect);
+}
+
+void drawFreeCell(int index)
+{
+    drawCard(TEXTURE_FREE_CELL, getFreeCellPosition(index));
+}
+
+void drawHomeCell(int suit)
+{
+    drawCard(TEXTURE_HOME_CELLS + suit, getHomeCellPosition(suit));
+}
+
+void drawTableau(int index)
+{
+    drawCard(TEXTURE_FREE_CELL, getTableauPosition(index));
 }
 
 void drawBoard(Board *board)
@@ -487,778 +1206,29 @@ void drawBoard(Board *board)
     }
 }
 
-Point getFreeCellPosition(int index)
+void render()
 {
-    return (Point){
-        FREE_CELL_X + (CARD_WIDTH + FREE_HOME_H_SPACING) * index,
-        FREE_HOME_Y
-    };
+    clearScreen();
+    drawBoard(&board);
+    drawScore();
+    SDL_RenderPresent(renderer);
 }
 
-Point getHomeCellPosition(int index)
+void mainLoop()
 {
-    return (Point){
-        HOME_CELL_X + (CARD_WIDTH + FREE_HOME_H_SPACING) * index,
-        FREE_HOME_Y
-    };
-}
-
-Point getTableauPosition(int index)
-{
-    return (Point){
-        TABLEAU_X + (CARD_WIDTH + TABLEAU_H_SPACING) * index,
-        TABLEAU_Y
-    };
-}
-
-Point getPositionInColumn(Point column_position, int card_index)
-{
-    return (Point){
-        column_position.x,
-        column_position.y + COLUMN_V_OFFSET * card_index
-    };
-}
-
-void drawFreeCell(int index)
-{
-    drawCard(TEXTURE_FREE_CELL, getFreeCellPosition(index));
-}
-
-void drawHomeCell(int suit)
-{
-    drawCard(TEXTURE_HOME_CELLS + suit, getHomeCellPosition(suit));
-}
-
-void drawTableau(int index)
-{
-    drawCard(TEXTURE_FREE_CELL, getTableauPosition(index));
-}
-
-void drawCard(int id, Point position)
-{
-    SDL_Rect dst_rect = { position.x, position.y, CARD_WIDTH, CARD_HEIGHT };
-    SDL_RenderCopy(renderer, textures[id], NULL, &dst_rect);
-}
-
-void onMouseDown(Point position)
-{
-    if (victory)
-        return;
-
-    // Get clicked card
-    drag.source = getSourceAt(position);
-    if (drag.source.origin == ORIGIN_NONE)
-        return;
-
-    drag.drag_offset.x = drag.source.card->position.x - position.x;
-    drag.drag_offset.y = drag.source.card->position.y - position.y;
-
-    drag.mouse_pos_on_down = position;
-    drag.card_pos_on_down = drag.source.card->position;
-    drag.draw_order_on_down = drag.source.card->draw_order;
-    drag.started_dragging = SDL_FALSE;
-
-    drag.source.card->draw_order += 1000;
-    drag.source.card->target_draw_order += 1000;
-
-    // If from tableau, set the draw order for the rest of the stack
-    if (drag.source.origin == ORIGIN_TABLEAU)
+    while (is_application_running)
     {
-        Column *col = &board.tableau[drag.source.tableau_index];
-
-        for (int i = drag.source.column_index + 1; i < col->count; i++)
-        {
-            Card *card = col->cards[i];
-            card->draw_order += 1000;
-            card->target_draw_order += 1000;
-        }
+        pollEvents();
+        update(1.f / 60.f);
+        render();
     }
 }
 
-void onMouseMove(Point position)
+int main(int argc, char *argv[])
 {
-    if (drag.source.origin == ORIGIN_NONE)
-        return;
-
-    Point drag_diff = {
-        position.x - drag.mouse_pos_on_down.x,
-        position.y - drag.mouse_pos_on_down.y
-    };
-
-    if (abs(drag_diff.x) > 3 || abs(drag_diff.y) > 3)
-        drag.started_dragging = SDL_TRUE;
-
-    if (drag.started_dragging)
-    {
-        drag.source.card->target_position.x = position.x + drag.drag_offset.x;
-        drag.source.card->target_position.y = position.y + drag.drag_offset.y;
-        drag.source.card->positionf.x = (float)drag.source.card->target_position.x;
-        drag.source.card->positionf.y = (float)drag.source.card->target_position.y;
-
-        // If from tableau, move the rest of the stack along
-        if (drag.source.origin == ORIGIN_TABLEAU)
-        {
-            Column *col = &board.tableau[drag.source.tableau_index];
-            Point position = drag.source.card->target_position;
-
-            for (int i = drag.source.column_index + 1; i < col->count; i++)
-            {
-                position.y += COLUMN_V_OFFSET;
-
-                Card *card = col->cards[i];
-                card->target_position = position;
-                card->positionf.x = (float)position.x;
-                card->positionf.y = (float)position.y;
-            }
-        }
-    }
-}
-
-void resetDragDrawOrder()
-{
-    drag.source.card->target_draw_order = drag.draw_order_on_down;
-
-    // If from tableau, move the rest of the stack along
-    if (drag.source.origin == ORIGIN_TABLEAU)
-    {
-        Column *col = &board.tableau[drag.source.tableau_index];
-        for (int i = drag.source.column_index + 1; i < col->count; i++)
-        {
-            Card *card = col->cards[i];
-            card->target_draw_order = i;
-        }
-    }
-}
-
-void resetDragPosition()
-{
-    drag.source.card->target_position = drag.card_pos_on_down;
-
-    // If from tableau, move the rest of the stack along
-    if (drag.source.origin == ORIGIN_TABLEAU)
-    {
-        Column *col = &board.tableau[drag.source.tableau_index];
-        Point position = drag.source.card->target_position;
-
-        for (int i = drag.source.column_index + 1; i < col->count; i++)
-        {
-            position.y += COLUMN_V_OFFSET;
-
-            Card *card = col->cards[i];
-            card->target_position = position;
-        }
-    }
-}
-
-void onMouseUp(Point position)
-{
-    if (drag.source.origin == ORIGIN_NONE)
-        return;
-
-    resetDragDrawOrder();
-
-    if (drag.started_dragging)
-    {
-        // Check if the mouse over card accepts our card
-        Source dest = getDestAt(position);
-
-        switch (dest.origin)
-        {
-            case ORIGIN_FREE_CELL:
-                if (canFreeCellAcceptSource(drag.source, dest.free_cell_index))
-                    moveCardToFreeCell(drag.source, dest.free_cell_index, SDL_TRUE);
-                else
-                    resetDragPosition();
-                break;
-
-            case ORIGIN_HOME_CELL:
-                if (canHomeCellAcceptSource(drag.source, dest.home_cell_index))
-                    moveCardToHomeCell(drag.source, dest.home_cell_index, SDL_TRUE);
-                else
-                    resetDragPosition();
-                break;
-
-            case ORIGIN_TABLEAU:
-                if (canTableauAcceptSource(drag.source, dest.tableau_index, SDL_FALSE))
-                    moveCardToTableau(drag.source, dest.tableau_index, SDL_TRUE);
-                else
-                    resetDragPosition();
-                break;
-
-            case ORIGIN_NONE:
-            default:
-                resetDragPosition();
-                break;
-        }
-    }
-    else
-    {
-        autoMoveCard(drag.source);
-    }
-
-    drag.source.origin = ORIGIN_NONE;
-}
-
-void autoMoveCard(Source source)
-{
-    // Home cells priority
-    for (int i = 0; i < 4; i++)
-    {
-        if (canHomeCellAcceptSource(source, i))
-        {
-            moveCardToHomeCell(source, i, SDL_TRUE);
-            return;
-        }
-    }
-
-    // Check if can move somewhere in the tableau
-    for (int i = 0; i < 8; i++)
-    {
-        if (canTableauAcceptSource(source, i, SDL_TRUE))
-        {
-            moveCardToTableau(source, i, SDL_TRUE);
-            return;
-        }
-    }
-
-    // Finally, if single card, move to Free Cells
-    for (int i = 0; i < 4; i++)
-    {
-        if (canFreeCellAcceptSource(source, i))
-        {
-            moveCardToFreeCell(source, i, SDL_TRUE);
-            return;
-        }
-    }
-}
-
-SDL_bool canHomeCellAcceptSource(Source source, int suit)
-{
-    // Needs to be same suit
-    if (getCardSuit(source.card) != suit)
-        return SDL_FALSE;
-
-    // If the source has more than 1 card (From the tableau, not last card of column),
-    // then we cannot accept it
-    if (getSourceCardCount(source) > 1)
-        return SDL_FALSE;
-
-    Card *home_cell_card = board.home_cells[suit];
-    int source_value = getCardValue(source.card);
-
-    // If home cell empty and source is ACE, we're good
-    if (home_cell_card == NULL)
-    {
-        if (source_value == CARD_VALUE_ACE)
-            return SDL_TRUE;
-        else
-            return SDL_FALSE; // Otherwise, we don't accept it
-    }
-
-    int home_value = getCardValue(home_cell_card);
-
-    // If source value is one more than home value, put it there.
-    if (source_value == home_value + 1)
-        return SDL_TRUE;
-
-    return SDL_FALSE;
-}
-
-int getSourceStackSize(Source source)
-{
-    int source_count = 1;
-
-    if (source.origin == ORIGIN_TABLEAU)
-        source_count = board.tableau[source.tableau_index].count - source.column_index;
-
-    return source_count;
-}
-
-int getEmptyColumnCount(int dest_tableau_index)
-{
-    int empty_count = 0;
-
-    for (int i = 0; i < 8; i++)
-    {
-        if (i == dest_tableau_index)
-            continue;
-        
-        if (board.tableau[i].count == 0)
-            empty_count++;
-    }
-
-    return empty_count;
-}
-
-int getEmptyFreeCellCount()
-{
-    int count = 0;
-
-    for (int i = 0; i < 4; i++)
-        if (board.free_cells[i] == NULL)
-            count++;
-
-    return count;
-}
-
-SDL_bool canTableauAcceptSource(Source source, int tableau_index, SDL_bool only_king_to_empty)
-{
-    // Avoid move to same column
-    if (source.origin == ORIGIN_TABLEAU &&
-        tableau_index == source.tableau_index)
-        return SDL_FALSE;
-
-    // Check if source column is not too big
-    int empty_column_count = getEmptyColumnCount(tableau_index);
-    int free_cell_count = getEmptyFreeCellCount();
-    int allowed_move_count = (free_cell_count + 1);
-    for (int i = 0; i < empty_column_count; ++i)
-        allowed_move_count *= 2;
-    if (getSourceStackSize(source) > allowed_move_count)
-        return SDL_FALSE;
-
-    Card *top_card = getTableauTopCard(tableau_index);
-
-    int source_color = getCardColor(source.card);
-    int source_value = getCardValue(source.card);
-
-    // If source is king and the column is empty, that's a valid move
-    if (source_value == CARD_VALUE_KING && top_card == NULL)
-        return SDL_TRUE;
-
-    if (top_card == NULL)
-        return only_king_to_empty ? SDL_FALSE : SDL_TRUE;
-
-    int top_color = getCardColor(top_card);
-    int top_value = getCardValue(top_card);
-
-    // If same color, invalid move
-    if (source_color == top_color)
-        return SDL_FALSE;
-
-    // Valid if the source value is stack - 1
-    if (source_value == top_value - 1)
-        return SDL_TRUE;
-
-    return SDL_FALSE;
-}
-
-SDL_bool canFreeCellAcceptSource(Source source, int free_cell_index)
-{
-    // Avoid move to same free cell
-    if (source.origin == ORIGIN_FREE_CELL &&
-        free_cell_index == source.free_cell_index)
-        return SDL_FALSE;
-
-    // If the source has more than 1 card (From the tableau, not last card of column),
-    // then we cannot accept it
-    if (getSourceCardCount(source) > 1)
-        return SDL_FALSE;
-
-    if (board.free_cells[free_cell_index] == NULL)
-        return SDL_TRUE;
-
-    return SDL_FALSE;
-}
-
-void moveCardToHomeCell(Source source, int suit, SDL_bool record_to_history)
-{
-    source.card->target_position = getHomeCellPosition(suit);
-    source.card->target_draw_order = getCardValue(source.card);
-
-    board.home_cells[suit] = source.card;
-
-    removeSource(source);
-    
-    if (record_to_history)
-    {
-        Source dest = source;
-        dest.origin = ORIGIN_HOME_CELL;
-        dest.home_cell_index = suit;
-        recordHistory(source, dest);
-    }
-}
-
-void moveCardToTableau(Source source, int tableau_index, SDL_bool record_to_history)
-{
-    Column *dest_column = &board.tableau[tableau_index];
-    Point dest_column_position = getTableauPosition(tableau_index);
-
-    int source_count = 0;
-
-    // If source is from tableau, we move a stack
-    if (source.origin == ORIGIN_TABLEAU)
-    {
-        Column *source_column = &board.tableau[source.tableau_index];
-
-        for (int i = source.column_index; i < source_column->count; i++, source_count++)
-        {
-            Card *src_card = source_column->cards[i];
-
-            src_card->target_position = getPositionInColumn(dest_column_position, dest_column->count);
-            src_card->target_draw_order = dest_column->count;
-
-            dest_column->cards[dest_column->count++] = src_card;
-        }
-    }
-    else
-    {
-        source_count = 1;
-
-        source.card->target_position = getPositionInColumn(dest_column_position, dest_column->count);
-        source.card->target_draw_order = dest_column->count;
-
-        dest_column->cards[dest_column->count++] = source.card;
-    }
-
-    removeSource(source);
-
-    if (record_to_history)
-    {
-        Source dest = source;
-        dest.origin = ORIGIN_TABLEAU;
-        dest.tableau_index = tableau_index;
-        dest.column_index = dest_column->count - source_count;
-        recordHistory(source, dest);
-    }
-}
-
-void moveCardToFreeCell(Source source, int free_cell_index, SDL_bool record_to_history)
-{
-    source.card->target_position = getFreeCellPosition(free_cell_index);
-    source.card->target_draw_order = 0;
-
-    board.free_cells[free_cell_index] = source.card;
-
-    removeSource(source);
-    
-    if (record_to_history)
-    {
-        Source dest = source;
-        dest.origin = ORIGIN_FREE_CELL;
-        dest.free_cell_index = free_cell_index;
-        recordHistory(source, dest);
-    }
-}
-
-void recordHistory(Source source, Source dest)
-{
-    if (history_count == MAX_UNDO)
-    {
-        memcpy(history, history + 1, sizeof(Action) * (history_count - 1));
-        history_count--;
-    }
-
-    history[history_count++] = (Action){ source, dest };
-}
-
-void undo()
-{
-    if (victory)
-        return;
-
-    if (drag.source.origin != ORIGIN_NONE)
-        return; // Make sure we don't undo while we're dragging a card around!
-
-    if (history_count == 0)
-        return;
-
-    history_count--;
-    Action action = history[history_count];
-
-    switch (action.source.origin)
-    {
-        case ORIGIN_FREE_CELL:
-            moveCardToFreeCell(action.dest, action.source.free_cell_index, SDL_FALSE);
-            break;
-        case ORIGIN_TABLEAU:
-            moveCardToTableau(action.dest, action.source.tableau_index, SDL_FALSE);
-            break;
-        case ORIGIN_HOME_CELL:
-            moveCardToHomeCell(action.dest, action.source.home_cell_index, SDL_FALSE);
-            break;
-    }
-}
-
-Source findCard(int id)
-{
-    Source source;
-
-    // Free Cells
-    for (int i = 0; i < 4; i++)
-    {
-        Card *card = board.free_cells[i];
-        if (card == NULL)
-            continue;
-
-        if (card->id == id)
-        {
-            source.card = card;
-            source.origin = ORIGIN_FREE_CELL;
-            source.free_cell_index = i;
-
-            return source;
-        }
-    }
-
-    // Tableau
-    for (int i = 0; i < 8; i++)
-    {
-        Column *column = &board.tableau[i];
-
-        for (int j = column->count - 1; j >= 0; j--)
-        {
-            Card *card = column->cards[j];
-
-            if (card->id == id)
-            {
-                source.card = card;
-                source.origin = ORIGIN_TABLEAU;
-                source.tableau_index = i;
-                source.column_index = j;
-
-                return source;
-            }
-        }
-    }
-
-    source.origin = ORIGIN_NONE;
-    source.card = NULL;
-    return source;
-}
-
-Source getSourceAt(Point position)
-{
-    Source source;
-
-    // Free Cells
-    for (int i = 0; i < 4; i++)
-    {
-        Card *card = board.free_cells[i];
-        if (card == NULL)
-            continue;
-
-        if (cardContainsPoint(card, position))
-        {
-            source.card = card;
-            source.origin = ORIGIN_FREE_CELL;
-            source.free_cell_index = i;
-
-            return source;
-        }
-    }
-
-    // Tableau
-    for (int i = 0; i < 8; i++)
-    {
-        Column *column = &board.tableau[i];
-        Card *prev_card = NULL;
-
-        for (int j = column->count - 1; j >= 0; j--)
-        {
-            Card *card = column->cards[j];
-
-            // Make sure this is a valid stack
-            if (prev_card)
-                if (getCardValue(card) != getCardValue(prev_card) + 1 ||
-                    getCardColor(card) == getCardColor(prev_card))
-                    break;
-
-            if (cardContainsPoint(card, position))
-            {
-                source.card = card;
-                source.origin = ORIGIN_TABLEAU;
-                source.tableau_index = i;
-                source.column_index = j;
-
-                return source;
-            }
-
-            prev_card = card;
-        }
-    }
-
-    source.origin = ORIGIN_NONE;
-    source.card = NULL;
-    return source;
-}
-
-Source getDestAt(Point position)
-{
-    Source source;
-
-    // Free Cells
-    for (int i = 0; i < 4; i++)
-    {
-        if (locationContainsPoint(getFreeCellPosition(i), position))
-        {
-            source.origin = ORIGIN_FREE_CELL;
-            source.free_cell_index = i;
-
-            return source;
-        }
-    }
-
-    // Home Cells
-    for (int i = 0; i < 4; i++)
-    {
-        if (locationContainsPoint(getHomeCellPosition(i), position))
-        {
-            source.origin = ORIGIN_HOME_CELL;
-            source.home_cell_index = i;
-
-            return source;
-        }
-    }
-
-    // Tableau
-    for (int i = 0; i < 8; i++)
-    {
-        Column *col = &board.tableau[i];
-        Point tableau_position = getTableauPosition(i);
-
-        tableau_position.y += COLUMN_V_OFFSET * col->count;
-        if (locationContainsPoint(tableau_position, position))
-        {
-            source.origin = ORIGIN_TABLEAU;
-            source.tableau_index = i;
-            source.column_index = col->count;
-
-            return source;
-        }
-    }
-
-    source.origin = ORIGIN_NONE;
-    source.card = NULL;
-    return source;
-}
-
-void removeSource(Source source)
-{
-    switch (source.origin)
-    {
-        case ORIGIN_FREE_CELL:
-            board.free_cells[source.free_cell_index] = NULL;
-            break;
-        case ORIGIN_TABLEAU:
-            board.tableau[source.tableau_index].count = source.column_index;
-            break;
-        case ORIGIN_HOME_CELL:
-        {
-            Card *card = board.home_cells[source.home_cell_index];
-            if (getCardValue(card) == 0)
-                board.home_cells[source.home_cell_index] = NULL;
-            else
-                board.home_cells[source.home_cell_index] = &board.deck[card->id - 1];
-            break;
-        }
-    }
-}
-
-int getSourceCardCount(Source source)
-{
-    switch (source.origin)
-    {
-        case ORIGIN_FREE_CELL:
-            return 1;
-        case ORIGIN_TABLEAU:
-            return board.tableau[source.tableau_index].count - source.column_index;
-        default:
-        case ORIGIN_NONE:
-            return 0;
-    }
-}
-
-SDL_bool cardContainsPoint(Card *card, Point point)
-{
-    return locationContainsPoint(card->position, point);
-}
-
-SDL_bool locationContainsPoint(Point position, Point point)
-{
-    return (point.x >= position.x &&
-            point.y >= position.y &&
-            point.x < position.x + CARD_WIDTH &&
-            point.y < position.y + CARD_HEIGHT) ? SDL_TRUE : SDL_FALSE;
-}
-
-void newGame(unsigned int seed)
-{
-    memset(&board, 0, sizeof(board));
-
-    for (int i = 0; i < 4; i++)
-        board.free_cells[i] = NULL;
-
-    for (int i = 0; i < 4; i++)
-        board.home_cells[i] = NULL;
-
-    // Init deck
-    for (int i = 0; i < 52; i++)
-        board.deck[i].id = i;
-
-    // Randomize seed using current time
-    board.seed = seed;
-    srand(board.seed);
-
-    // Shuffle
-    Card *shuffled_deck[52];
-    for (int i = 0; i < 52; i++)
-        shuffled_deck[i] = &board.deck[i];
-    
-    for (int i = 52; i > 0; i--)
-    {
-        int random_index = rand() % i;
-
-        Card *tmp = shuffled_deck[random_index];
-        shuffled_deck[random_index] = shuffled_deck[i - 1];
-        shuffled_deck[i - 1] = tmp;
-    }
-
-    // Distribute shuffled deck into the tableau
-    for (int i = 0; i < 52; i++)
-    {
-        Column *col = &board.tableau[i % 8];
-        Card *card = shuffled_deck[i];
-        Point column_position = getTableauPosition(i % 8);
-        card->target_position = getPositionInColumn(column_position, col->count);
-        card->target_draw_order = col->count;
-        col->cards[col->count++] = card;
-    }
-
-    history_count = 0;
-    start_time = end_time = time(0);
-    victory = SDL_FALSE;
-}
-
-Card *getTableauTopCard(int tableau_index)
-{
-    Column *column = &board.tableau[tableau_index];
-    return getColumnTopCard(column);
-}
-
-Card *getColumnTopCard(Column *column)
-{
-    Card *top_card = NULL;
-    if (column->count)
-        top_card = column->cards[column->count - 1];
-
-    return top_card;
-}
-
-int getCardValue(Card *card)
-{
-    if (card == NULL)
-        return -1;
-
-    return card->id % 13;
-}
-
-int getCardSuit(Card *card)
-{
-    return card->id / 13;
-}
-
-int getCardColor(Card *card)
-{
-    return card->id / 26;
+    init();
+    mainLoop();
+    shutdown();
+
+    return 0;
 }
